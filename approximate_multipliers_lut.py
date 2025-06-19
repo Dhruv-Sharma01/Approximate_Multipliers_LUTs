@@ -1,177 +1,164 @@
 import numpy as np
+
+# -------------------- 1. Multiplier Architectures --------------------
+
+def underdesigned_multiplier(a, b):
+    prod = a * b
+    if (a & 0b11) == 0b11 and (b & 0b11) == 0b11:
+        prod -= 2
+    return prod
+
+def broken_array_multiplier(a, b):
+    prod = a * (b & 0xF0)
+    return prod & ~0b11
+
+def inaccurate_counter_multiplier(a, b):
+    prod = a * b
+    if (prod & 0b111) == 0b100:
+        prod = (prod & ~0b111) | 0b010
+    return prod
+
+def error_tolerant_multiplier(a, b):
+    ah, al = a >> 4, a & 0xF
+    bh, bl = b >> 4, b & 0xF
+    return (ah * bh) << 8 if (ah * bh) != 0 else al * bl
+
+def static_segment_multiplier(a, b):
+    ah, al = a >> 4, a & 0xF
+    bh, bl = b >> 4, b & 0xF
+    return (ah * bh) << 8 if (ah != 0 or bh != 0) else al * bl
+
+def approx_wallace_multiplier(a, b):
+    a0, a1 = a & 0xF, a >> 4
+    b0, b1 = b & 0xF, b >> 4
+    return (a0 * b0) + ((a1 * b1) << 8)
+
+def logarithmic_multiplier(a, b):
+    if a == 0 or b == 0:
+        return 0
+    i, j = a.bit_length() - 1, b.bit_length() - 1
+    m, n = a - (1 << i), b - (1 << j)
+    return (1 << (i + j)) + (m << j) + (n << i)
+
+def improved_log_multiplier(a, b):
+    return logarithmic_multiplier(a, b) + ((a & b) >> 1)
+
+def drum_multiplier(a, b):
+    if a == 0 or b == 0:
+        return 0
+    la, lb, k = a.bit_length() - 1, b.bit_length() - 1, 4
+    if la < k-1 or lb < k-1:
+        return a * b
+    a_core = (1 << la) | (1 << (la - (k - 1)))
+    b_core = (1 << lb) | (1 << (lb - (k - 1)))
+    return (a_core * b_core) << (la + lb - 2*(k - 1))
+
+def altered_pp_multiplier(a, b):
+    return (a * b) & ~0xF
+
+def app2_multiplier(a, b):
+    prod = a * b
+    return (prod & ~0x3FF) | (prod & 0x3)
+
+def tam1_multiplier(a, b):
+    return (a * b) & ~0b1
+
+def tam2_multiplier(a, b):
+    return (a * b) & ~0b11
+
+def alms1_multiplier(a, b):
+    return logarithmic_multiplier(a, b) | 0x1
+
+def ialm_sl_multiplier(a, b):
+    return (logarithmic_multiplier(a, b) >> 2) << 2
+
+def ppp_multiplier(a, b):
+    return ((a >> 2) * (b >> 2)) << 4
+
+def loa_multiplier(a, b):
+    res = 0
+    for i in range(8):
+        if (a >> i) & 1:
+            for j in range(8):
+                if (b >> j) & 1:
+                    res |= (1 << (i + j))
+    return res
+
+def linearized_multiplier(a, b):
+    prod = a * b
+    return (prod >> 1) + (prod >> 2)
+
+def evolvable_multiplier(a, b):
+    return (a * b) & 0xFFFF
+
+# -------------------- 2. Metadata --------------------
+
+ARCHS = [
+    ("Underdesigned", underdesigned_multiplier),
+    ("BrokenArray", broken_array_multiplier),
+    ("InaccurateCounter", inaccurate_counter_multiplier),
+    ("ETM", error_tolerant_multiplier),
+    ("SSM", static_segment_multiplier),
+    ("ApproxWallace", approx_wallace_multiplier),
+    ("Mitchell", logarithmic_multiplier),
+    ("IterLog", improved_log_multiplier),
+    ("DRUM", drum_multiplier),
+    ("AlteredPP", altered_pp_multiplier),
+    ("APP2", app2_multiplier),
+    ("TAM1", tam1_multiplier),
+    ("TAM2", tam2_multiplier),
+    ("ALM_SOA", alms1_multiplier),
+    ("IALM_SL", ialm_sl_multiplier),
+    ("PPP", ppp_multiplier),
+    ("LOA", loa_multiplier),
+    ("Linearized", linearized_multiplier),
+    ("EvoApprox", evolvable_multiplier),
+]
+
+# -------------------- 3. LUT + Metrics --------------------
+
+SIZE = 256
+
+def build_lut(fn):
+    lut = np.zeros((SIZE, SIZE), dtype=np.uint16)
+    for i in range(SIZE):
+        for j in range(SIZE):
+            lut[i, j] = fn(i, j)
+    return lut
+
+def compute_error_metrics(lut):
+    exact = np.outer(np.arange(SIZE), np.arange(SIZE))
+    err = np.abs(lut.astype(int) - exact)
+    return err.mean(), err.max()
+
+# -------------------- 4. Run --------------------
+
+def main():
+    print(f"{'Architecture':20s} {'MAE':>10} {'MaxAE':>10}")
+    print("-" * 42)
+    for name, fn in ARCHS:
+        lut = build_lut(fn)
+        mae, maxae = compute_error_metrics(lut)
+        print(f"{name:20s} {mae:10.2f} {maxae:10d}")
 import os
 
-N = 8
-SIZE = 1 << N
 OUTPUT_DIR = "Approx_multipliers_lut"
 
-# Ensure output directory exists
 def ensure_output_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-# -----------------------------------------------------------------------------
-# 1) Define each architecture as a function f(a, b) → approx product
-# -----------------------------------------------------------------------------
-
-def mitchell(a, b):
-    if a == 0 or b == 0:
-        return 0
-    return 1 << int(round(np.log2(a) + np.log2(b)))
-
-
-def loa(a, b, k=2):
-    hi = ((a >> k) * (b >> k)) << k
-    lo = ((a & ((1 << k) - 1)) | (b & ((1 << k) - 1)))
-    return hi | lo
-
-
-def broken_array(a, b, k=1):
-    return (a * (b >> k)) << k
-
-
-def truncated(a, b, k=2):
-    return (a * (b >> k)) << k
-
-
-def ttc(a, b, k=2):
-    tr = (a * (b >> k)) << k
-    bias = (1 << (k - 1)) * a
-    return tr + bias
-
-
-def drum(a, b, k=2):
-    prod = a * b
-    mask = ~((1 << k) - 1)
-    return prod & mask
-
-
-def aam(a, b):
-    exact = a * b
-    return exact - ((a & b) >> 1)
-
-
-def moni(a, b):
-    return loa(a, b, k=1)
-
-
-def eta1(a, b):
-    return loa(a, b, k=3)
-
-
-def eta2(a, b):
-    return loa(a, b, k=4)
-
-
-def arr(a, b, k=3):
-    return ((a >> k) * (b >> k)) << (2 * k)
-
-
-def awt(a, b):
-    return (a * b) & ~1
-
-
-def eco(a, b):
-    return truncated(a, b, k=1)
-
-
-def beula(a, b):
-    return broken_array(a, b, k=1) + ((a & 1) & (b & 1))
-
-
-def etl(a, b):
-    return truncated(a, b, k=3) + ((a & ((1 << 3) - 1)) >> (3 - 1))
-
-
-def etam(a, b):
-    return ttc(a, b, k=3)
-
-
-def awt2(a, b):
-    return (a * b) & ~3
-
-
-def waem(a, b):
-    return (a * b) + ((a ^ b) & 1)
-
-
-def wamm(a, b):
-    return (a * b) - ((a & b) & 1)
-
-
-def fmam(a, b):
-    return (a * b) >> 1
-
-# Pack architectures\
-ARCHS = [
-    ("Mitchell", mitchell),
-    ("LOA_k2", loa),
-    ("BrokenArray_k1", broken_array),
-    ("Truncated_k2", truncated),
-    ("TTC_k2", ttc),
-    ("DRUM_k2", drum),
-    ("AAM", aam),
-    ("MONA", moni),
-    ("ETA-I", eta1),
-    ("ETA-II", eta2),
-    ("ARR_k3", arr),
-    ("AWT", awt),
-    ("ECO_k1", eco),
-    ("BEULA", beula),
-    ("ETL", etl),
-    ("ETAM_k3", etam),
-    ("AWT-II", awt2),
-    ("WAEM", waem),
-    ("WAMM", wamm),
-    ("FMAM", fmam),
-]
-
-# -----------------------------------------------------------------------------
-# 2) Build LUT for a given function
-# -----------------------------------------------------------------------------
-
-def build_lut(func):
-    lut = np.zeros((SIZE, SIZE), dtype=np.uint16)
-    for a in range(SIZE):
-        for b in range(SIZE):
-            lut[a, b] = np.uint16(func(a, b))
-    return lut
-
-# -----------------------------------------------------------------------------
-# 3) Error metrics
-# -----------------------------------------------------------------------------
-
-def error_metrics(lut):
-    i = np.arange(SIZE, dtype=int)
-    j = np.arange(SIZE, dtype=int)
-    exact = np.outer(i, j)
-    err = np.abs(lut.astype(int) - exact)
-    return float(err.mean()), int(err.max())
-
-# -----------------------------------------------------------------------------
-# 4) Main: build, compute, save
-# -----------------------------------------------------------------------------
-
-def main():
+def save_luts():
     ensure_output_dir(OUTPUT_DIR)
-    results = []
-
+    print("\nSaving LUTs:")
     for name, fn in ARCHS:
-        print(f"Building LUT for {name}...")
         lut = build_lut(fn)
-        mae, maxae = error_metrics(lut)
-        results.append((name, mae, maxae))
-
-        # Save LUT
-        filename = os.path.join(OUTPUT_DIR, f"lut_{name}.npy")
+        filename = os.path.join(OUTPUT_DIR, f"{name}_lut.npy")
         np.save(filename, lut)
-        print(f"Saved {filename}")
+        print(f"✔ Saved {filename}")
 
-    # Print summary
-    print(f"\n{'Arch':20s} {'MAE':>10s} {'MaxAE':>10s}")
-    print("-"*42)
-    for name, mae, maxae in results:
-        print(f"{name:20s} {mae:10.2f} {maxae:10d}")
-
+# Call this function if you want to save the LUTs after evaluating metrics
 if __name__ == "__main__":
     main()
+    save_luts()
+
