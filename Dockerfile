@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir \
       torchvision \
       matplotlib \
       psutil
+RUN pip install notebook ipykernel && \
+    python -m ipykernel install --user --name torchapprox-dev --display-name "Python (torchapprox-dev)"
 
 # 4. Set working directory
 WORKDIR /workspace
